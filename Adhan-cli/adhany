@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+"""adhan - command line client for the adhand daemon (stdlib only)."""
+import argparse
+import csv
+import json
+import os
+import signal
+import socket
+import sys
+import time
+from datetime import date, datetime, timedelta, timezone
+
+PRAYERS = ("fajr", "sunrise", "dhuhr", "asr", "maghrib", "isha")
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+MONTHS = ("January", "February", "March", "April", "May", "June", "July",
+          "August", "September", "October", "November", "December")
+CHUNK = 50          # export sends this many requests, then reads that many replies
+
+EXAMPLES = """\
+examples:
+  adhan                              today's times and the next prayer
+  adhan now                          previous and next prayer with countdowns
+  adhan next --json                  machine-readable output for scripts
+  adhan date 2026-10-01              times for one day
+  adhan export --year 2026 --month 10        one month as a table
+  adhan export --from 2026-10-01 --to 2026-10-20     any date range (max 10 years)
+  adhan export --year 2026 --format csv -o 2026.csv
+  adhan config set --lat 34.01 --lon -6.83   change the daemon's saved settings
+
+exit codes: 0 ok, 1 daemon or usage error, 2 cannot reach the daemon
+"""
+
+
+def die(code, msg):
+    print(f"adhan: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+class Daemon:
+    def __init__(self, path):
+        self.sock = socket.socket(socket.AF_UNIX)
+        try:
+            self.sock.connect(path)
+        except OSError as e:
+            die(2, f"cannot connect to {path} ({e.strerror}); "
+                   "is the daemon running? try: systemctl --user status adhand")
+        self.f = self.sock.makefile("rw", encoding="utf-8", newline="\n")
+
+    def send(self, obj):
+        self.f.write((obj if isinstance(obj, str) else json.dumps(obj)) + "\n")
+        self.f.flush()
+
+    def recv(self):
+        line = self.f.readline()
+        if not line:
+            die(2, "the daemon closed the connection")
+        return json.loads(line)
+
+    def ask(self, obj):
+        self.send(obj)
+        r = self.recv()
+        if not r.get("ok"):
+            die(1, f"{r.get('error')}: {r.get('message')}")
+        return r["result"]
+
+
+# ---------- helpers ----------
+
+def get_tz(name):
+    if not name:
+        return None                      # system timezone
+    from zoneinfo import ZoneInfo
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        die(1, f"unknown timezone: {name}")
+
+
+def hm(ts, tz):
+    return datetime.fromtimestamp(ts, tz).strftime("%H:%M")
+
+
+def span(seconds):
+    mins = int(abs(seconds) // 60)
+    if mins < 1:
+        return "less than a minute"
+    h, m = divmod(mins, 60)
+    return f"{h}h {m}m" if h else f"{m}m"
+
+
+def describe(item, now, tz):
+    name, ts = item
+    when = f"in {span(ts - now)}" if ts > now else f"{span(now - ts)} ago"
+    return f"{name} {hm(ts, tz)} ({when})"
+
+
+def settings(a):
+    """Calculation flags -> the daemon's override/config keys."""
+    s = {}
+    for attr, key in (("lat", "latitude"), ("lon", "longitude"), ("fajr_angle", "fajr_angle"),
+                      ("isha_angle", "isha_angle"), ("asr", "asr")):
+        v = getattr(a, attr, None)
+        if v is not None:
+            s[key] = v
+    adj = {}
+    for item in getattr(a, "adjust", None) or []:
+        name, _, minutes = item.partition("=")
+        try:
+            adj[name] = int(minutes)
+        except ValueError:
+            die(1, f"--adjust expects NAME=MINUTES (for example isha=2), got {item!r}")
+    if adj:
+        s["adjustments"] = adj
+    return s
+
+
+def times(d, day, overrides, neighbors=False):
+    req = {"method": "times", "date": day}
+    if overrides:
+        req["overrides"] = overrides
+    if neighbors:
+        req["neighbors"] = True
+    return d.ask(req)
+
+
+def timeline(res, with_sunrise=False):
+    """Previous Isha, today's prayers, next Fajr, in time order."""
+    items = []
+    if res.get("previous_isha") is not None:
+        items.append(("Isha", res["previous_isha"]))
+    for p in PRAYERS:
+        if p != "sunrise" or with_sunrise:
+            items.append((p.capitalize(), res["times"][p]))
+    if res.get("next_fajr") is not None:
+        items.append(("Fajr", res["next_fajr"]))
+    return items
+
+
+def pick(items, now):
+    before = [i for i in items if i[1] <= now]
+    after = [i for i in items if i[1] > now]
+    return (before[-1] if before else None), (after[0] if after else None)
+
+
+# ---------- day commands ----------
+
+def show_day(a, d, day, with_next):
+    tz = get_tz(a.tz)
+    res = times(d, day.isoformat(), settings(a), neighbors=with_next)
+    if a.json:
+        print(json.dumps(res))
+        return
+    print(f"{WEEKDAYS[day.weekday()]} {day.isoformat()}")
+    for p in PRAYERS:
+        print(f"  {p.capitalize():<8}{hm(res['times'][p], tz)}")
+    if with_next:
+        now = time.time()
+        _, nxt = pick(timeline(res), now)
+        if nxt:
+            print(f"Next: {describe(nxt, now, tz)}")
+
+
+def cmd_today(a, d):
+    show_day(a, d, datetime.now(get_tz(a.tz)).date(), with_next=True)
+
+
+def cmd_date(a, d):
+    try:
+        day = date.fromisoformat(a.day)
+    except ValueError:
+        die(1, "date must look like 2026-10-01")
+    show_day(a, d, day, with_next=False)
+
+
+def show_nav(a, d, want_prev, want_next):
+    tz = get_tz(a.tz)
+    now = time.time()
+    res = times(d, datetime.fromtimestamp(now, tz).date().isoformat(), settings(a), neighbors=True)
+    prev, nxt = pick(timeline(res, a.with_sunrise), now)
+    wanted = {}
+    if want_prev:
+        wanted["previous"] = prev
+    if want_next:
+        wanted["next"] = nxt
+    for key, item in wanted.items():
+        if item is None:
+            die(1, f"could not find the {key} prayer")
+    if a.json:
+        print(json.dumps({k: {"name": v[0].lower(), "unix": v[1]} for k, v in wanted.items()}))
+    elif want_prev and want_next:
+        print(f"Previous: {describe(prev, now, tz)}")
+        print(f"Next:     {describe(nxt, now, tz)}")
+    else:
+        print(describe(prev if want_prev else nxt, now, tz))
+
+
+def cmd_next(a, d): show_nav(a, d, False, True)
+def cmd_previous(a, d): show_nav(a, d, True, False)
+def cmd_now(a, d): show_nav(a, d, True, True)
+
+
+# ---------- export ----------
+
+HEADER = ["Weekday", "Day", "Month"] + [p.capitalize() for p in PRAYERS]
+
+
+def row(res, tz):
+    day = date.fromisoformat(res["date"])
+    return [WEEKDAYS[day.weekday()], day.day, MONTHS[day.month - 1]] + \
+           [hm(res["times"][p], tz) for p in PRAYERS]
+
+
+def print_table(rows, out):
+    widths = [max(len(str(r[i])) for r in rows) for i in range(len(rows[0]))]
+    for r in rows:
+        cells = [str(c).rjust(w) if i == 1 else str(c).ljust(w)
+                 for i, (c, w) in enumerate(zip(r, widths))]
+        print("  ".join(cells).rstrip(), file=out)
+
+
+def make_ics(results):
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//adhan//EN"]
+    for r in results:
+        for p in PRAYERS:
+            if p == "sunrise":
+                continue
+            t = datetime.fromtimestamp(r["times"][p], timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            lines += ["BEGIN:VEVENT", f"UID:{r['date']}-{p}@adhan", f"DTSTAMP:{stamp}",
+                      f"DTSTART:{t}", f"DTEND:{t}", f"SUMMARY:{p.capitalize()}", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
+
+
+MAX_DAYS = 3660      # 10 years of 366 days
+
+
+def export_days(a, tz):
+    if a.date_from or a.date_to:
+        if a.year or a.month:
+            die(1, "--from/--to cannot be combined with --year or --month")
+        if not (a.date_from and a.date_to):
+            die(1, "--from and --to must be used together")
+        try:
+            start, end = date.fromisoformat(a.date_from), date.fromisoformat(a.date_to)
+        except ValueError:
+            die(1, "--from and --to must look like 2026-10-01")
+        if end < start:
+            die(1, "--to is before --from")
+    else:
+        year = a.year or datetime.now(tz).year
+        start = date(year, a.month or 1, 1)
+        end = date(year, 12, 31) if not a.month or a.month == 12 \
+            else date(year, a.month + 1, 1) - timedelta(days=1)
+    n = (end - start).days + 1
+    if n > MAX_DAYS:
+        die(1, f"that range is {n} days and the limit is {MAX_DAYS} (about 10 years). "
+               "Run separate exports for longer periods, for example one command per "
+               "decade, each with its own -o FILE.")
+    return [start + timedelta(days=i) for i in range(n)]
+
+
+def cmd_export(a, d):
+    tz = get_tz(a.tz)
+    days = export_days(a, tz)
+    ov = settings(a)
+
+    results = []
+    for i in range(0, len(days), CHUNK):          # write a chunk, then read its replies
+        chunk = days[i:i + CHUNK]
+        for day in chunk:
+            req = {"id": day.isoformat(), "method": "times", "date": day.isoformat()}
+            if ov:
+                req["overrides"] = ov
+            d.send(req)
+        for day in chunk:
+            r = d.recv()
+            if r.get("id") != day.isoformat():
+                die(1, "replies arrived out of order; aborting")
+            if not r.get("ok"):
+                die(1, f"{day}: {r.get('error')}: {r.get('message')} (nothing written)")
+            results.append(r["result"])
+
+    out = open(a.output, "w", newline="") if a.output else sys.stdout
+    try:
+        if a.format == "table":
+            print_table([HEADER] + [row(r, tz) for r in results], out)
+        elif a.format == "csv":
+            w = csv.writer(out)
+            w.writerow(HEADER)
+            w.writerows(row(r, tz) for r in results)
+        elif a.format == "json":
+            json.dump(results, out, indent=2)
+            out.write("\n")
+        else:
+            out.write(make_ics(results))
+    finally:
+        if a.output:
+            out.close()
+            print(f"wrote {len(results)} days to {a.output}", file=sys.stderr)
+
+
+# ---------- daemon / config ----------
+
+def show_config(a, cfg):
+    if a.json:
+        print(json.dumps(cfg, indent=2))
+        return
+    for k, v in cfg.items():
+        if k == "adjustments":
+            v = ", ".join(f"{n}={m:+d}" for n, m in v.items()) or "none"
+        print(f"{k:<12}{v}")
+
+
+def cmd_config(a, d):
+    show_config(a, d.ask({"method": "config.get"}))
+
+
+def cmd_config_set(a, d):
+    vals = settings(a)
+    if a.neighbors is not None:
+        vals["neighbors"] = a.neighbors == "true"
+    if not vals:
+        die(1, "nothing to set; try: adhan config set --lat 34.01 --lon -6.83")
+    show_config(a, d.ask({"method": "config.set", "values": vals}))
+
+
+def cmd_ping(a, d):
+    d.ask({"method": "ping"})
+    print("pong")
+
+
+def cmd_raw(a, d):
+    d.send(a.request)
+    r = d.recv()
+    print(json.dumps(r))
+    sys.exit(0 if r.get("ok") else 1)
+
+
+# ---------- argument parsing ----------
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):            # argparse exits 2 by default; 2 is reserved for "no daemon"
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        sys.exit(1)
+
+
+def build_parser():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--socket", metavar="PATH",
+                        help="daemon socket (default: $ADHAND_SOCKET, then $XDG_RUNTIME_DIR/adhand.sock)")
+    common.add_argument("--json", action="store_true", help="print JSON instead of text")
+    common.add_argument("--tz", metavar="NAME",
+                        help="show times in this IANA timezone (default: system timezone)")
+
+    calc = argparse.ArgumentParser(add_help=False)
+    g = calc.add_argument_group("calculation settings")
+    g.add_argument("--lat", type=float, metavar="DEG", help="latitude")
+    g.add_argument("--lon", type=float, metavar="DEG", help="longitude")
+    g.add_argument("--fajr-angle", type=float, metavar="DEG", help="Fajr sun angle")
+    g.add_argument("--isha-angle", type=float, metavar="DEG", help="Isha sun angle")
+    g.add_argument("--asr", choices=["standard", "hanafi"], help="Asr shadow rule")
+    g.add_argument("--adjust", action="append", metavar="NAME=MIN",
+                   help="shift a prayer by whole minutes, e.g. isha=2 (repeatable)")
+
+    main = Parser(
+        prog="adhan", description="Talk to the adhand daemon: prayer times, countdowns and exports.",
+        epilog=EXAMPLES, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = main.add_subparsers(dest="cmd", metavar="COMMAND", title="commands")
+
+    def add(name, helptext, func, parents):
+        p = sub.add_parser(name, help=helptext, description=helptext, parents=parents)
+        p.set_defaults(func=func)
+        return p
+
+    both = [common, calc]
+    add("today", "today's times and the next prayer (default command)", cmd_today, both)
+    p = add("date", "times for one date", cmd_date, both)
+    p.add_argument("day", metavar="YYYY-MM-DD")
+    for name, func, text in (("next", cmd_next, "the next prayer with a countdown"),
+                             ("previous", cmd_previous, "the previous prayer and how long ago it was"),
+                             ("now", cmd_now, "both the previous and the next prayer")):
+        p = add(name, text, func, both)
+        p.add_argument("--with-sunrise", action="store_true", help="count sunrise as a prayer time")
+
+    p = add("export", "export times for a year, a month, or a date range (up to 10 years)",
+            cmd_export, both)
+    p.add_argument("--year", type=int, help="year to export (default: this year)")
+    p.add_argument("--month", type=int, choices=range(1, 13), metavar="1-12",
+                   help="export only this month")
+    p.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD",
+                   help="first day of a custom range (use with --to; replaces --year/--month)")
+    p.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD",
+                   help="last day of a custom range, inclusive; at most 3660 days (10 years)")
+    p.add_argument("--format", choices=["table", "csv", "json", "ics"], default="table",
+                   help="table and csv have columns Weekday, Day, Month and the six times "
+                        "(default: table); ics has the five prayers, sunrise excluded")
+    p.add_argument("-o", "--output", metavar="FILE", help="write to FILE instead of the terminal")
+
+    p = add("config", "show the daemon's saved settings", cmd_config, [common])
+    csub = p.add_subparsers(dest="config_cmd", metavar="set")
+    sp = csub.add_parser("set", help="change the daemon's saved settings",
+                         description="Change the daemon's saved settings. Only the flags you pass change.",
+                         parents=both)
+    sp.add_argument("--neighbors", choices=["true", "false"],
+                    help="default for including previous Isha and next Fajr in replies")
+    sp.set_defaults(func=cmd_config_set)
+
+    add("ping", "check that the daemon answers", cmd_ping, [common])
+    p = add("raw", "send one raw JSON request and print the reply", cmd_raw, [common])
+    p.add_argument("request", metavar="JSON", help="for example '{\"method\":\"ping\"}'")
+    return main
+
+
+def main():
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)   # quiet exit for `adhan export | head`
+    argv = sys.argv[1:]
+    if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
+        argv = ["today"] + argv                      # bare `adhan` means `adhan today`
+    a = build_parser().parse_args(argv)
+    path = (a.socket or os.environ.get("ADHAND_SOCKET")
+            or os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "adhand.sock"))
+    a.func(a, Daemon(path))
+
+
+if __name__ == "__main__":
+    main()
