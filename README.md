@@ -1,4 +1,4 @@
-# Adhan
+# Adhany
 
 Prayer times from your terminal. Adhan is split into two parts:
 
