@@ -15,10 +15,284 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 PRAYERS = ("fajr", "sunrise", "dhuhr", "asr", "maghrib", "isha")
-WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-MONTHS = ("January", "February", "March", "April", "May", "June", "July",
-          "August", "September", "October", "November", "December")
 CHUNK = 50          # export sends this many requests, then reads that many replies
+
+# ---------- languages ----------
+# Every human-facing word lives here. Phrases are whole format strings, never glued
+# together in code, because word order differs between languages. Machine-readable
+# output (--json, Waybar "alt" and "class") never uses these.
+STRINGS = {
+    "en": {
+        "prayers": {"fajr": "Fajr", "sunrise": "Sunrise", "dhuhr": "Dhuhr",
+                    "asr": "Asr", "maghrib": "Maghrib", "isha": "Isha"},
+        "weekdays": ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
+        "weekdays_short": ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
+        "months": ("January", "February", "March", "April", "May", "June", "July",
+                   "August", "September", "October", "November", "December"),
+        "months_short": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul",
+                         "Aug", "Sep", "Oct", "Nov", "Dec"),
+        "day_header": "{weekday} {date}",
+        "previous_label": "Previous: ",
+        "next_label": "Next: ",
+        "next_label_aligned": "Next:     ",
+        "describe": "{name} {time} ({when})",
+        "in": "in {t}",
+        "ago": "{t} ago",
+        "lt_minute": "less than a minute",
+        "h_m": "{h}h {m}m",
+        "m": "{m}m",
+        "h_weekday": "Weekday", "h_day": "Day", "h_month": "Month",
+        "tip_date": "{wd} {d} {mon} {y}",
+        "bar_elapsed": "{name} +{n} min",
+        "bar_countdown": "{name} -{n} min",
+        "bar_time": "{name} {time}",
+        "bar_offline": "adhan offline",
+        "bar_error": "adhan error",
+    },
+    "ar": {
+        "prayers": {"fajr": "\u0627\u0644\u0641\u062c\u0631", "sunrise": "\u0627\u0644\u0634\u0631\u0648\u0642",
+                    "dhuhr": "\u0627\u0644\u0638\u0647\u0631", "asr": "\u0627\u0644\u0639\u0635\u0631",
+                    "maghrib": "\u0627\u0644\u0645\u063a\u0631\u0628", "isha": "\u0627\u0644\u0639\u0634\u0627\u0621"},
+        "weekdays": ("\u0627\u0644\u0627\u062b\u0646\u064a\u0646", "\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621",
+                     "\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621", "\u0627\u0644\u062e\u0645\u064a\u0633",
+                     "\u0627\u0644\u062c\u0645\u0639\u0629", "\u0627\u0644\u0633\u0628\u062a",
+                     "\u0627\u0644\u0623\u062d\u062f"),
+        # Maghrebi month names (Morocco, Algeria, Tunisia)
+        "months": ("\u064a\u0646\u0627\u064a\u0631", "\u0641\u0628\u0631\u0627\u064a\u0631",
+                   "\u0645\u0627\u0631\u0633", "\u0623\u0628\u0631\u064a\u0644",
+                   "\u0645\u0627\u064a", "\u064a\u0648\u0646\u064a\u0648",
+                   "\u064a\u0648\u0644\u064a\u0648\u0632", "\u063a\u0634\u062a",
+                   "\u0634\u062a\u0646\u0628\u0631", "\u0623\u0643\u062a\u0648\u0628\u0631",
+                   "\u0646\u0648\u0646\u0628\u0631", "\u062f\u062c\u0646\u0628\u0631"),
+        "day_header": "{weekday} {date}",
+        "previous_label": "\u0627\u0644\u0633\u0627\u0628\u0642: ",
+        "next_label": "\u0627\u0644\u062a\u0627\u0644\u064a: ",
+        "next_label_aligned": "\u0627\u0644\u062a\u0627\u0644\u064a: ",
+        "describe": "{name} {time} {when}",       # no brackets: kitty does not mirror them
+        "in": "\u0628\u0639\u062f {t}",
+        "ago": "\u0645\u0646\u0630 {t}",
+        "lt_minute": "\u0623\u0642\u0644 \u0645\u0646 \u062f\u0642\u064a\u0642\u0629",
+        "h_m": "{h}\u0633 {m}\u062f",
+        "m": "{m}\u062f",
+        "h_weekday": "\u0627\u0644\u064a\u0648\u0645", "h_day": "\u0627\u0644\u062a\u0627\u0631\u064a\u062e",
+        "h_month": "\u0627\u0644\u0634\u0647\u0631",
+        "tip_date": "{wd} {d} {mon} {y}",
+        # no +/- signs in the bar text: they are a classic bidi trap next to Arabic
+        "bar_elapsed": "{name} \u0645\u0646\u0630 {n} \u062f",
+        "bar_countdown": "{name} \u0628\u0639\u062f {n} \u062f",
+        "bar_time": "{name} {time}",
+        "bar_offline": "\u0623\u0630\u0627\u0646 \u063a\u064a\u0631 \u0645\u062a\u0635\u0644",
+        "bar_error": "\u062e\u0637\u0623 \u0641\u064a \u0623\u0630\u0627\u0646",
+    },
+}
+STRINGS["ar"]["weekdays_short"] = STRINGS["ar"]["weekdays"]    # Arabic names are short already
+STRINGS["ar"]["months_short"] = STRINGS["ar"]["months"]
+DIGIT_STYLES = ("western", "arabic-indic")
+BIDI_MODES = ("auto", "on", "off")
+
+
+class UI:
+    """How output is shown; filled in once by setup_ui() before any command runs."""
+    lang = "en"
+    digits = "western"
+    bidi = False          # True: apply the kitty fix to human-facing terminal text
+
+
+def T(key, **kw):
+    return STRINGS[UI.lang][key].format(**kw)
+
+
+def pname(key):
+    return STRINGS[UI.lang]["prayers"][key]
+
+
+def wd(i, short=False):
+    return STRINGS[UI.lang]["weekdays_short" if short else "weekdays"][i]
+
+
+def mon(i, short=False):
+    return STRINGS[UI.lang]["months_short" if short else "months"][i]
+
+
+_INDIC = str.maketrans("0123456789", "\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669")
+
+
+def D(value):
+    """Digits in the chosen style (Arabic only); anything else passes through unchanged."""
+    if UI.lang == "ar" and UI.digits == "arabic-indic":
+        return str(value).translate(_INDIC)
+    return value
+
+
+# ---------- Arabic in kitty (trimmed from ArKitty's arfix.py) ----------
+# Kitty draws one cell at a time with no joining, and draws every word that contains
+# Arabic right to left. fix() reshapes the letters, then pre-flips what kitty would
+# reverse, then reverses the word order. Needs arabic-reshaper, imported on first use,
+# and only when UI.bidi is on, so Waybar, pipes, --json and English never load it.
+# Keep in step with ArKitty (digits mode "split", punctuation mode "move").
+
+_ARB = "\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF"
+_AD = "\u0660-\u0669\u06F0-\u06F9"                    # Arabic-Indic and Persian digits
+_APUNCT = "\u060C\u061B\u061F"
+_MARKS = re.compile("[\u200e\u200f\u061c\u202a-\u202e\u2066-\u2069]")   # invisible bidi marks
+_LETTERS = f"(?:(?![0-9{_AD}])[{_ARB}])"
+_RUNS = re.compile(f"{_LETTERS}+|(?:(?!{_LETTERS}).)+", re.S)
+_HAS = re.compile(_LETTERS)
+_LATIN = re.compile("[A-Za-z]")
+_ARDIG = re.compile(f"[{_AD}]")
+_NUM = re.compile(rf"([{_AD}]+(?:[:.,/\u066B\u066C][{_AD}]+)*)")      # a number: 12:30 , 3.5
+_ADRUN = re.compile(f"[{_AD}]+")
+_EDGE = re.compile(rf"^([{_APUNCT}]*)(.*?)([{_APUNCT}]*)$", re.S)
+_reshaper_obj = None
+
+
+def _reshaper():
+    global _reshaper_obj
+    if _reshaper_obj is None:
+        try:
+            import arabic_reshaper
+        except ImportError:
+            die(1, "Arabic in kitty needs the arabic-reshaper package for the python3 that runs "
+                    "adhan (Arch: yay -S python-arabic-reshaper; elsewhere: pip install arabic-reshaper), "
+                    "or run with --bidi off")
+        _reshaper_obj = arabic_reshaper.ArabicReshaper(configuration={
+            "delete_harakat": True,       # diacritics attach to the wrong cell after reordering
+            "delete_tatweel": True,       # the stretch bar renders as '_' in a cell grid
+            "support_ligatures": True})
+    return _reshaper_obj
+
+
+def _flip_runs(word):
+    """In a token mixing Arabic with other stuff (12X, -42X), reverse each non-Arabic run
+    in place: kitty draws the whole token right to left."""
+    parts = _RUNS.findall(word)
+    if len(parts) > 1 and any(_HAS.search(p) for p in parts):
+        return "".join(p if _HAS.search(p) else p[::-1] for p in parts)
+    return word
+
+
+def _one(w):
+    if _ARDIG.search(w):                  # kitty reverses each Arabic-Indic digit run in place
+        pieces = [p for p in _NUM.split(w) if p]
+        out = [_ADRUN.sub(lambda m: m.group()[::-1], p) if _NUM.fullmatch(p) else _flip_runs(p)
+               for p in pieces]
+        if _HAS.search(w):                # next to letters, the pieces swap sides
+            out.reverse()
+        return "".join(out)
+    return _flip_runs(w)
+
+
+def _punct(word):
+    """Arabic punctuation glued to a word moves to the other end."""
+    lead, core, trail = _EDGE.match(word).groups()
+    return trail + core + lead if (lead or trail) and core else word
+
+
+def _reorder(words):
+    """Reverse the word order, keeping consecutive Latin words in their own order."""
+    is_latin = lambda w: bool(_LATIN.search(w)) and not _HAS.search(w)
+    groups = []
+    for w in words:
+        if groups and is_latin(w) and is_latin(groups[-1][-1]):
+            groups[-1].append(w)
+        else:
+            groups.append([w])
+    return " ".join(" ".join(g) for g in reversed(groups))
+
+
+def fix(line):
+    """One logical line of text -> the string to print so kitty shows it correctly."""
+    line = _MARKS.sub("", line)
+    if not _HAS.search(line) and not _ARDIG.search(line):
+        return line                       # nothing to fix; arabic-reshaper is not loaded
+    words = [_one(_punct(w)) for w in _reshaper().reshape(line).split()]
+    return _reorder(words)
+
+
+def fx(text):
+    """Human-facing text for the terminal: fixed when UI.bidi is on, untouched otherwise."""
+    if not UI.bidi:
+        return text
+    return "\n".join(fix(line) for line in str(text).split("\n"))
+
+
+def emit(text=""):
+    """The one print for human-facing lines of logical text."""
+    print(fx(text))
+
+
+def col(text, width=0):
+    """A table cell: fix it first, then pad, because reshaping changes the length."""
+    return fx(str(text)).ljust(width)
+
+
+def in_kitty():
+    return bool(os.environ.get("KITTY_WINDOW_ID")) or os.environ.get("TERM") == "xterm-kitty"
+
+
+# ---------- client settings (language etc.) ----------
+# Presentation only, so it lives here and not in the daemon's config.
+
+def client_config_path():
+    return os.environ.get("ADHAN_CONFIG") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "adhan", "config.json")
+
+
+def load_client_config():
+    path = client_config_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        die(1, f"cannot read {path}: {e}")
+    if not isinstance(data, dict):
+        die(1, f"{path} must contain a JSON object")
+    return data
+
+
+def save_client_config(updates):
+    path = client_config_path()
+    data = load_client_config()
+    data.update(updates)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(path + ".tmp", path)
+    except OSError as e:
+        die(1, f"cannot write {path}: {e.strerror}")
+
+
+def norm_lang(value, source):
+    code = str(value).replace("_", "-").split("-")[0].split(".")[0].lower()   # ar_MA.UTF-8 -> ar
+    if code not in STRINGS:
+        die(1, f"unknown language {value!r} (from {source}); available: {', '.join(STRINGS)}")
+    return code
+
+
+def setup_ui(a):
+    """Flag, then environment, then saved setting, then the default."""
+    saved, env = load_client_config(), os.environ
+    path = client_config_path()
+    for value, source in ((getattr(a, "lang", None), "--lang"), (env.get("ADHAN_LANG"), "ADHAN_LANG"),
+                          (saved.get("lang"), path)):
+        if value:
+            UI.lang = norm_lang(value, source)
+            break
+    for value, source in ((getattr(a, "digits", None), "--digits"), (env.get("ADHAN_DIGITS"), "ADHAN_DIGITS"),
+                          (saved.get("digits"), path)):
+        if value:
+            if value not in DIGIT_STYLES:
+                die(1, f"unknown digit style {value!r} (from {source}); use {' or '.join(DIGIT_STYLES)}")
+            UI.digits = value
+            break
+    mode = getattr(a, "bidi", None) or env.get("ADHAN_BIDI") or "auto"
+    if mode not in BIDI_MODES:
+        die(1, f"unknown bidi mode {mode!r}; use {', '.join(BIDI_MODES)}")
+    UI.bidi = UI.lang == "ar" and (mode == "on" or (mode == "auto" and sys.stdout.isatty() and in_kitty()))
 
 EXAMPLES = """\
 examples:
@@ -30,6 +304,8 @@ examples:
   adhan export --from 2026-10-01 --to 2026-10-20     any date range (max 10 years)
   adhan export --year 2026 --format csv -o 2026.csv
   adhan config set --lat 34.01 --lon -6.83   change the daemon's saved settings
+  adhan --lang ar                    show everything in Arabic (also: ADHAN_LANG=ar)
+  adhan config set --lang ar         make Arabic the saved default
   adhan waybar preview normal --at 2026-10-01T12:21:40   see what the bar would show
 
 exit codes: 0 ok, 1 daemon or usage error, 2 cannot reach the daemon
@@ -95,21 +371,21 @@ def get_tz(name):
 
 
 def hm(ts, tz):
-    return datetime.fromtimestamp(ts, tz).strftime("%H:%M")
+    return D(datetime.fromtimestamp(ts, tz).strftime("%H:%M"))
 
 
 def span(seconds):
     mins = int(abs(seconds) // 60)
     if mins < 1:
-        return "less than a minute"
+        return T("lt_minute")
     h, m = divmod(mins, 60)
-    return f"{h}h {m}m" if h else f"{m}m"
+    return T("h_m", h=D(h), m=D(m)) if h else T("m", m=D(m))
 
 
 def describe(item, now, tz):
-    name, ts = item
-    when = f"in {span(ts - now)}" if ts > now else f"{span(now - ts)} ago"
-    return f"{name} {hm(ts, tz)} ({when})"
+    key, ts = item
+    when = T("in", t=span(ts - now)) if ts > now else T("ago", t=span(now - ts))
+    return T("describe", name=pname(key), time=hm(ts, tz), when=when)
 
 
 def settings(a):
@@ -142,15 +418,16 @@ def times(d, day, overrides, neighbors=False):
 
 
 def timeline(res, with_sunrise=False):
-    """Previous Isha, today's prayers, next Fajr, in time order."""
+    """Previous Isha, today's prayers, next Fajr, in time order. Items are (key, unix);
+    the key is the lowercase English name and is translated only when shown."""
     items = []
     if res.get("previous_isha") is not None:
-        items.append(("Isha", res["previous_isha"]))
+        items.append(("isha", res["previous_isha"]))
     for p in PRAYERS:
         if p != "sunrise" or with_sunrise:
-            items.append((p.capitalize(), res["times"][p]))
+            items.append((p, res["times"][p]))
     if res.get("next_fajr") is not None:
-        items.append(("Fajr", res["next_fajr"]))
+        items.append(("fajr", res["next_fajr"]))
     return items
 
 
@@ -168,14 +445,14 @@ def show_day(a, d, day, with_next):
     if a.json:
         print(json.dumps(res))
         return
-    print(f"{WEEKDAYS[day.weekday()]} {day.isoformat()}")
+    emit(T("day_header", weekday=wd(day.weekday()), date=D(day.isoformat())))
     for p in PRAYERS:
-        print(f"  {p.capitalize():<8}{hm(res['times'][p], tz)}")
+        print("  " + col(pname(p), 8) + col(hm(res["times"][p], tz)))
     if with_next:
         now = time.time()
         _, nxt = pick(timeline(res), now)
         if nxt:
-            print(f"Next: {describe(nxt, now, tz)}")
+            emit(T("next_label") + describe(nxt, now, tz))
 
 
 def cmd_today(a, d):
@@ -204,12 +481,12 @@ def show_nav(a, d, want_prev, want_next):
         if item is None:
             die(1, f"could not find the {key} prayer")
     if a.json:
-        print(json.dumps({k: {"name": v[0].lower(), "unix": v[1]} for k, v in wanted.items()}))
+        print(json.dumps({k: {"name": v[0], "unix": v[1]} for k, v in wanted.items()}))
     elif want_prev and want_next:
-        print(f"Previous: {describe(prev, now, tz)}")
-        print(f"Next:     {describe(nxt, now, tz)}")
+        emit(T("previous_label") + describe(prev, now, tz))
+        emit(T("next_label_aligned") + describe(nxt, now, tz))
     else:
-        print(describe(prev if want_prev else nxt, now, tz))
+        emit(describe(prev if want_prev else nxt, now, tz))
 
 
 def cmd_next(a, d): show_nav(a, d, False, True)
@@ -219,12 +496,13 @@ def cmd_now(a, d): show_nav(a, d, True, True)
 
 # ---------- export ----------
 
-HEADER = ["Weekday", "Day", "Month"] + [p.capitalize() for p in PRAYERS]
+def header():
+    return [T("h_weekday"), T("h_day"), T("h_month")] + [pname(p) for p in PRAYERS]
 
 
 def row(res, tz):
     day = date.fromisoformat(res["date"])
-    return [WEEKDAYS[day.weekday()], day.day, MONTHS[day.month - 1]] + \
+    return [wd(day.weekday()), D(day.day), mon(day.month - 1)] + \
            [hm(res["times"][p], tz) for p in PRAYERS]
 
 
@@ -245,7 +523,7 @@ def make_ics(results):
                 continue
             t = datetime.fromtimestamp(r["times"][p], timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             lines += ["BEGIN:VEVENT", f"UID:{r['date']}-{p}@adhan", f"DTSTAMP:{stamp}",
-                      f"DTSTART:{t}", f"DTEND:{t}", f"SUMMARY:{p.capitalize()}", "END:VEVENT"]
+                      f"DTSTART:{t}", f"DTEND:{t}", f"SUMMARY:{pname(p)}", "END:VEVENT"]
     lines.append("END:VCALENDAR")
     return "\r\n".join(lines) + "\r\n"
 
@@ -299,13 +577,18 @@ def cmd_export(a, d):
                 die(1, f"{day}: {r.get('error')}: {r.get('message')} (nothing written)")
             results.append(r["result"])
 
-    out = open(a.output, "w", newline="") if a.output else sys.stdout
+    # Files get logical text. CSV in Arabic gets a BOM so Excel reads it as UTF-8.
+    enc = "utf-8-sig" if (a.format == "csv" and UI.lang == "ar") else "utf-8"
+    out = open(a.output, "w", newline="", encoding=enc) if a.output else sys.stdout
     try:
         if a.format == "table":
-            print_table([HEADER] + [row(r, tz) for r in results], out)
+            rows = [header()] + [row(r, tz) for r in results]
+            if out is sys.stdout and UI.bidi:       # fix each cell before print_table measures it
+                rows = [[fix(str(c)) for c in r] for r in rows]
+            print_table(rows, out)
         elif a.format == "csv":
             w = csv.writer(out)
-            w.writerow(HEADER)
+            w.writerow(header())
             w.writerows(row(r, tz) for r in results)
         elif a.format == "json":
             json.dump(results, out, indent=2)
@@ -321,10 +604,12 @@ def cmd_export(a, d):
 # ---------- daemon / config ----------
 
 def show_config(a, cfg):
+    saved = load_client_config()
+    client = {"lang": saved.get("lang", "en"), "digits": saved.get("digits", "western")}
     if a.json:
-        print(json.dumps(cfg, indent=2))
+        print(json.dumps(cfg if cfg is not None else client, indent=2))
         return
-    for k, v in cfg.items():
+    for k, v in {**(cfg or {}), **client}.items():
         if k == "adjustments":
             v = ", ".join(f"{n}={m:+d}" for n, m in v.items()) or "none"
         print(f"{k:<12}{v}")
@@ -338,9 +623,13 @@ def cmd_config_set(a, d):
     vals = settings(a)
     if a.neighbors is not None:
         vals["neighbors"] = a.neighbors == "true"
-    if not vals:
-        die(1, "nothing to set; try: adhan config set --lat 34.01 --lon -6.83")
-    show_config(a, d.ask({"method": "config.set", "values": vals}))
+    ui = {k: getattr(a, k) for k in ("lang", "digits") if getattr(a, k, None)}
+    if not vals and not ui:
+        die(1, "nothing to set; try: adhan config set --lat 34.01 --lon -6.83 (or --lang ar)")
+    cfg = d.ask({"method": "config.set", "values": vals}) if vals else None   # daemon first: it validates
+    if ui:
+        save_client_config(ui)                 # language and digits are saved client-side
+    show_config(a, cfg)
 
 
 def cmd_ping(a, d):
@@ -386,25 +675,35 @@ def view_item(prev, nxt, now, flipped):
 
 def render(item, now, tz):
     """(text, state) for one prayer; the format depends on that prayer's own distance."""
-    name, ts = item
+    key, ts = item
+    name = pname(key)
     if ts <= now:
         elapsed = now - ts
-        if elapsed < ELAPSED_WINDOW:
-            return f"{name} +{math.ceil(elapsed / 60):02d} min", "elapsed"    # rounds up: runs fast
-        return f"{name} {hm(ts, tz)}", "past"
+        if elapsed < ELAPSED_WINDOW:        # rounds up: runs fast
+            return T("bar_elapsed", name=name, n=D(f"{math.ceil(elapsed / 60):02d}")), "elapsed"
+        return T("bar_time", name=name, time=hm(ts, tz)), "past"
     remaining = ts - now
-    if remaining < COUNTDOWN_WINDOW:
-        return f"{name} -{int(remaining // 60):02d} min", "countdown"        # rounds down: runs fast
-    return f"{name} {hm(ts, tz)}", "next"
+    if remaining < COUNTDOWN_WINDOW:        # rounds down: runs fast
+        return T("bar_countdown", name=name, n=D(f"{int(remaining // 60):02d}")), "countdown"
+    return T("bar_time", name=name, time=hm(ts, tz)), "next"
+
+
+def tooltip_rows(res, day, nxt, tz):
+    """(heading, [(name, time, is_next)]) as plain logical text."""
+    head = T("tip_date", wd=wd(day.weekday(), True), d=D(f"{day.day:02d}"),
+             mon=mon(day.month - 1, True), y=D(day.year))
+    rows = [(pname(p), hm(res["times"][p], tz),
+             bool(nxt and nxt[0] == p and nxt[1] == res["times"][p]))     # not tomorrow's Fajr
+            for p in PRAYERS]
+    return head, rows
 
 
 def build_tooltip(res, day, nxt, tz):
-    lines = [f"{WEEKDAYS[day.weekday()][:3]} {day.day:02d} {MONTHS[day.month - 1][:3]} {day.year}"]
-    for p in PRAYERS:
-        line = f"{p.capitalize():<9}{hm(res['times'][p], tz)}"
-        if nxt and nxt[0].lower() == p and nxt[1] == res["times"][p]:     # not tomorrow's Fajr
-            line = f'<span foreground="{HIGHLIGHT}">{line}</span>'
-        lines.append(line)
+    head, rows = tooltip_rows(res, day, nxt, tz)
+    lines = [head]
+    for name, t, is_next in rows:
+        line = f"{name:<9}{t}"
+        lines.append(f'<span foreground="{HIGHLIGHT}">{line}</span>' if is_next else line)
     return "\n".join(lines)
 
 
@@ -420,7 +719,7 @@ def waybar_payload(res, day, prev, nxt, now, tz, flipped):
     if item is None:
         die(1, "no prayer times found")
     text, state = render(item, now, tz)
-    return {"text": text, "alt": item[0].lower(),
+    return {"text": text, "alt": item[0],
             "class": [state] + (["flipped"] if flipped else []),
             "tooltip": build_tooltip(res, day, nxt, tz)}
 
@@ -431,7 +730,7 @@ def cmd_waybar_show(a, d):
         now = time.time()
         payload = waybar_payload(*waybar_fetch(d, now, tz), now, tz, is_flipped(now))
     except CliError as e:                  # always print valid JSON so the bar never shows a traceback
-        payload = {"text": "adhan offline" if e.code == 2 else "adhan error", "alt": "offline",
+        payload = {"text": T("bar_offline") if e.code == 2 else T("bar_error"), "alt": "offline",
                    "class": ["offline"], "tooltip": html.escape(str(e))}
     print(json.dumps(payload))
 
@@ -462,22 +761,19 @@ def parse_at(text, tz):
     return dt.timestamp()
 
 
-def ansi(markup):
-    if sys.stdout.isatty():
-        markup = re.sub(r'<span foreground="#[0-9a-fA-F]{6}">', "\033[34m", markup)
-        return markup.replace("</span>", "\033[0m")
-    return re.sub(r"</?span[^>]*>", "", markup)
-
-
 def cmd_waybar_preview(a, d):
     tz = get_tz(a.tz)
     now = parse_at(a.at, tz) if a.at else time.time()
     res, day, prev, nxt = waybar_fetch(d, now, tz)
     if a.view == "tooltip":
-        print(ansi(build_tooltip(res, day, nxt, tz)))
+        head, rows = tooltip_rows(res, day, nxt, tz)
+        emit(head)
+        for name, t, is_next in rows:
+            line = col(name, 9) + col(t)
+            print(f"\033[34m{line}\033[0m" if is_next and sys.stdout.isatty() else line)
         return
     p = waybar_payload(res, day, prev, nxt, now, tz, flipped=(a.view == "flipped"))
-    print(f"{p['text']}    [icon: {p['alt']}, class: {' '.join(p['class'])}]")
+    print(f"{fx(p['text'])}    [icon: {p['alt']}, class: {' '.join(p['class'])}]")
 
 
 # ---------- argument parsing ----------
@@ -495,6 +791,13 @@ def build_parser():
                       help="daemon socket (default: $ADHAND_SOCKET, then $XDG_RUNTIME_DIR/adhand.sock)")
     conn.add_argument("--tz", metavar="NAME",
                       help="show times in this IANA timezone (default: system timezone)")
+    conn.add_argument("--lang", choices=list(STRINGS),
+                      help="language of the output (default: $ADHAN_LANG, then the saved setting, then en)")
+    conn.add_argument("--digits", choices=DIGIT_STYLES,
+                      help="digit style in Arabic output (default: $ADHAN_DIGITS, saved setting, then western 0-9)")
+    conn.add_argument("--bidi", choices=BIDI_MODES,
+                      help="kitty Arabic fix for terminal text: auto = only on a kitty terminal "
+                           "(default: $ADHAN_BIDI, then auto)")
     common = argparse.ArgumentParser(add_help=False, parents=[conn])
     common.add_argument("--json", action="store_true", help="print JSON instead of text")
 
@@ -586,9 +889,15 @@ def main():
     if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
         argv = ["today"] + argv                      # bare `adhan` means `adhan today`
     a = build_parser().parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):          # Arabic must not depend on the locale
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
     path = (getattr(a, "socket", None) or os.environ.get("ADHAND_SOCKET")
             or os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "adhand.sock"))
     try:
+        setup_ui(a)
         a.func(a, Daemon(path))
     except CliError as e:
         print(f"adhan: {e}", file=sys.stderr)

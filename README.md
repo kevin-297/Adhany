@@ -23,6 +23,7 @@ The CLI does no calculation itself. Only the daemon needs `adhanpy`.
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
+- [Arabic](#arabic)
 - [Waybar module](#waybar-module)
 - [Scripting and the socket protocol](#scripting-and-the-socket-protocol)
 - [Troubleshooting](#troubleshooting)
@@ -34,6 +35,7 @@ The CLI does no calculation itself. Only the daemon needs `adhanpy`.
 - Linux with systemd (optional, for running the daemon as a user service)
 - Waybar (optional, only for the [status bar module](#waybar-module)), plus `pkill` from `procps` for the click-to-flip feature
 - A [Nerd Font](https://www.nerdfonts.com/) (optional, only if you use icons in the Waybar module)
+- [`arabic-reshaper`](https://pypi.org/project/arabic-reshaper/) (optional, only for Arabic output in a [kitty](#arabic) terminal; see [Kitty](#kitty) for how to install it)
 
 ## Installation
 
@@ -149,6 +151,10 @@ Notes:
 | `ADHAND_CONFIG`   | daemon  | Path to the config file (default `~/.config/adhand/config.json`) |
 | `ADHAND_SOCKET`   | CLI     | Socket path to connect to                                        |
 | `XDG_RUNTIME_DIR` | both    | Base directory for the default socket and the Waybar flip state file (falls back to `/tmp`) |
+| `ADHAN_LANG`      | CLI     | Output language, `en` or `ar` (see [Arabic](#arabic))            |
+| `ADHAN_DIGITS`    | CLI     | `western` (0-9, default) or `arabic-indic` (٠-٩), Arabic output only |
+| `ADHAN_BIDI`      | CLI     | `auto` (default), `on` or `off`: the kitty Arabic fix            |
+| `ADHAN_CONFIG`    | CLI     | Path to the CLI's own settings file (default `~/.config/adhan/config.json`) |
 
 To set `ADHAND_CONFIG` for the service, add `Environment=ADHAND_CONFIG=/path/to/config.json` to the `[Service]` section.
 
@@ -214,6 +220,9 @@ Every command except the `waybar` subcommands accepts these:
 | `--socket PATH` | Daemon socket (default: `$ADHAND_SOCKET`, then `$XDG_RUNTIME_DIR/adhand.sock`) |
 | `--json`        | Print JSON instead of text                                           |
 | `--tz NAME`     | Show times in this IANA timezone, e.g. `Africa/Casablanca` (default: system timezone) |
+| `--lang en\|ar` | Output language (default: `$ADHAN_LANG`, then the saved setting, then `en`) |
+| `--digits western\|arabic-indic` | Digit style in Arabic output (default: `$ADHAN_DIGITS`, saved setting, then `western`) |
+| `--bidi auto\|on\|off` | Kitty Arabic fix for terminal text (default: `$ADHAN_BIDI`, then `auto`) |
 
 Commands that calculate times (`today`, `date`, `next`, `previous`, `now`, `export`, `config set`) also accept the calculation settings:
 
@@ -271,6 +280,70 @@ Saturday    3  October  05:55  07:23    13:16  16:36  19:09    20:27
 | `2`  | Cannot reach the daemon                           |
 
 `adhan waybar show` is the exception: it always prints valid JSON and exits `0`, even when the daemon is down, so the bar never shows a traceback.
+
+## Arabic
+
+`adhan` can show everything in Arabic: prayer names, weekdays, Maghrebi month names (ماي، يوليوز، غشت، شتنبر…), countdowns and the Waybar text.
+
+```
+$ adhan now --lang ar
+السابق: الفجر 05:20 منذ 6س 26د
+التالي: الظهر 12:11 بعد 24د
+```
+
+### Choosing the language
+
+The first match wins:
+
+1. the `--lang en|ar` flag
+2. the `ADHAN_LANG` environment variable
+3. the saved setting: `adhan config set --lang ar`
+4. English
+
+Nothing changes for existing users, because English is the default. Like every option, the flag goes after the command (`adhan now --lang ar`); a bare `adhan --lang ar` also works. The saved setting lives in the CLI's own file, `~/.config/adhan/config.json`, not in the daemon's config, because language is presentation only. `adhan config set --lang ar` works even when the daemon is not running, and `adhan config` shows the saved `lang` and `digits`.
+
+Digits are Western (`0-9`) by default, as used in the Maghreb. `--digits arabic-indic` (or `adhan config set --digits arabic-indic`) switches Arabic output to ٠-٩.
+
+### Kitty
+
+Kitty does not join Arabic letters or reorder right-to-left text, so Arabic comes out as disconnected letters in the wrong order. `adhan` fixes this itself when it prints human-facing text to **an interactive kitty terminal**, using the same technique as [ArKitty](https://github.com/kevin-297/ArKitty) (a trimmed copy lives in `Adhan-cli/adhany`). This needs the `arabic-reshaper` package, installed for the same `python3` that runs the CLI:
+
+```bash
+# Arch Linux (AUR)
+yay -S python-arabic-reshaper
+
+# Debian, Ubuntu
+sudo apt install python3-arabic-reshaper
+
+# anywhere else (not on Arch: pip refuses to touch the system Python there)
+pip install --user arabic-reshaper
+```
+
+Arch protects the system Python, so a plain `pip install` fails with `externally-managed-environment`. Use the AUR package. If you would rather keep it out of the system, install it into a virtual environment and point the CLI at it: `python -m venv ~/.local/share/adhan-venv`, `~/.local/share/adhan-venv/bin/pip install arabic-reshaper`, then change the first line of the installed `~/.local/bin/adhan` to `#!/home/YOU/.local/share/adhan-venv/bin/python`.
+
+`--bidi auto` (the default) applies the fix only when all of these hold: the language is Arabic, stdout is a terminal, and the terminal is kitty (`KITTY_WINDOW_ID` is set, or `TERM=xterm-kitty`). Use `--bidi on` to force it, or `--bidi off` to see the plain text. If the package is missing, `adhan` says so and exits with code 1. The package is imported only when needed, so English output and Waybar never load it.
+
+The fix is **never** applied to anything a program or another app reads:
+
+| Output | Arabic text is |
+|--------|----------------|
+| Terminal in kitty | shaped and reordered for kitty |
+| Other terminals, pipes | plain (logical) text |
+| `waybar show` | plain; Waybar's own text engine (Pango) already does it correctly |
+| `--json` | untouched, always English keys and numbers |
+| `export -o file` (CSV, ICS) | plain; Arabic CSV files get a UTF-8 BOM so Excel reads them correctly |
+
+`alt` and `class` in the Waybar JSON stay English in every language, so your `format-icons` and CSS keep working.
+
+### Waybar in Arabic
+
+Either save the language (`adhan config set --lang ar`), or set it on the module only:
+
+```jsonc
+"exec": "env ADHAN_LANG=ar $HOME/.local/bin/adhan waybar show",
+```
+
+The bar then reads, for example, `الظهر بعد 24 د` or `الظهر منذ 05 د` (before and after the prayer) instead of `Dhuhr -24 min`. Arabic text avoids `+`/`-` signs and brackets on purpose, since they behave unpredictably next to Arabic. Make sure the bar's font has Arabic glyphs, and update `min-length` if the text is wider than before.
 
 ## Waybar module
 
