@@ -87,14 +87,14 @@ STRINGS = {
 }
 STRINGS["ar"]["weekdays_short"] = STRINGS["ar"]["weekdays"]    # Arabic names are short already
 STRINGS["ar"]["months_short"] = STRINGS["ar"]["months"]
-DIGIT_STYLES = ("western", "arabic-indic")
+DIGIT_STYLES = ("islamic", "indian")
 BIDI_MODES = ("auto", "on", "off")
 
 
 class UI:
     """How output is shown; filled in once by setup_ui() before any command runs."""
     lang = "en"
-    digits = "western"
+    digits = "islamic"
     bidi = False          # True: apply the kitty fix to human-facing terminal text
 
 
@@ -119,7 +119,7 @@ _INDIC = str.maketrans("0123456789", "\u0660\u0661\u0662\u0663\u0664\u0665\u0666
 
 def D(value):
     """Digits in the chosen style (Arabic only); anything else passes through unchanged."""
-    if UI.lang == "ar" and UI.digits == "arabic-indic":
+    if UI.lang == "ar" and UI.digits == "indian":
         return str(value).translate(_INDIC)
     return value
 
@@ -605,7 +605,7 @@ def cmd_export(a, d):
 
 def show_config(a, cfg):
     saved = load_client_config()
-    client = {"lang": saved.get("lang", "en"), "digits": saved.get("digits", "western")}
+    client = {"lang": saved.get("lang", "en"), "digits": saved.get("digits", "islamic")}
     if a.json:
         print(json.dumps(cfg if cfg is not None else client, indent=2))
         return
@@ -794,7 +794,7 @@ def build_parser():
     conn.add_argument("--lang", choices=list(STRINGS),
                       help="language of the output (default: $ADHAN_LANG, then the saved setting, then en)")
     conn.add_argument("--digits", choices=DIGIT_STYLES,
-                      help="digit style in Arabic output (default: $ADHAN_DIGITS, saved setting, then western 0-9)")
+                      help="digit style in Arabic output (default: $ADHAN_DIGITS, saved setting, then islamic 0-9)")
     conn.add_argument("--bidi", choices=BIDI_MODES,
                       help="kitty Arabic fix for terminal text: auto = only on a kitty terminal "
                            "(default: $ADHAN_BIDI, then auto)")

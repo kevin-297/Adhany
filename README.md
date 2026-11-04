@@ -152,7 +152,7 @@ Notes:
 | `ADHAND_SOCKET`   | CLI     | Socket path to connect to                                        |
 | `XDG_RUNTIME_DIR` | both    | Base directory for the default socket and the Waybar flip state file (falls back to `/tmp`) |
 | `ADHAN_LANG`      | CLI     | Output language, `en` or `ar` (see [Arabic](#arabic))            |
-| `ADHAN_DIGITS`    | CLI     | `western` (0-9, default) or `arabic-indic` (٠-٩), Arabic output only |
+| `ADHAN_DIGITS`    | CLI     | `islamic` (0-9, default) or `indian` (٠-٩), Arabic output only |
 | `ADHAN_BIDI`      | CLI     | `auto` (default), `on` or `off`: the kitty Arabic fix            |
 | `ADHAN_CONFIG`    | CLI     | Path to the CLI's own settings file (default `~/.config/adhan/config.json`) |
 
@@ -221,7 +221,7 @@ Every command except the `waybar` subcommands accepts these:
 | `--json`        | Print JSON instead of text                                           |
 | `--tz NAME`     | Show times in this IANA timezone, e.g. `Africa/Casablanca` (default: system timezone) |
 | `--lang en\|ar` | Output language (default: `$ADHAN_LANG`, then the saved setting, then `en`) |
-| `--digits western\|arabic-indic` | Digit style in Arabic output (default: `$ADHAN_DIGITS`, saved setting, then `western`) |
+| `--digits islamic\|indian` | Digit style in Arabic output (default: `$ADHAN_DIGITS`, saved setting, then `islamic`) |
 | `--bidi auto\|on\|off` | Kitty Arabic fix for terminal text (default: `$ADHAN_BIDI`, then `auto`) |
 
 Commands that calculate times (`today`, `date`, `next`, `previous`, `now`, `export`, `config set`) also accept the calculation settings:
@@ -302,7 +302,7 @@ The first match wins:
 
 Nothing changes for existing users, because English is the default. Like every option, the flag goes after the command (`adhan now --lang ar`); a bare `adhan --lang ar` also works. The saved setting lives in the CLI's own file, `~/.config/adhan/config.json`, not in the daemon's config, because language is presentation only. `adhan config set --lang ar` works even when the daemon is not running, and `adhan config` shows the saved `lang` and `digits`.
 
-Digits are Western (`0-9`) by default, as used in the Maghreb. `--digits arabic-indic` (or `adhan config set --digits arabic-indic`) switches Arabic output to ٠-٩.
+Digits are Islamic (`0-9`) by default, as used in the Maghreb. `--digits indian` (or `adhan config set --digits indian`) switches Arabic output to ٠-٩.
 
 ### Kitty
 
